@@ -2,7 +2,6 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
-#include <vector> // Thêm thư viện để lưu danh sách ID đã gửi
 
 const char* ssid = "HOANG WIFI";
 const char* password = "hhhhhhh1";
@@ -18,22 +17,6 @@ HardwareSerial sim800(1);
 unsigned long lastCheckTime = 0;
 const unsigned long checkInterval = 60000;
 
-// ====== Danh sách ID đã gửi SMS trong phiên hiện tại ======
-std::vector<String> sentIDs;
-
-bool hasSentBefore(String id) {
-  for (String sid : sentIDs) {
-    if (sid == id) return true;
-  }
-  return false;
-}
-
-void markAsSent(String id) {
-  sentIDs.push_back(id);
-  if (sentIDs.size() > 200) sentIDs.erase(sentIDs.begin()); // Giữ tối đa 200 ID
-}
-
-// ====== Hàm loại bỏ dấu tiếng Việt ======
 String removeVietnameseAccents(String str) {
   const char* find[] = {"á","à","ả","ã","ạ","ă","ắ","ằ","ẳ","ẵ","ặ","â","ấ","ầ","ẩ","ẫ","ậ",
                         "đ",
@@ -42,6 +25,7 @@ String removeVietnameseAccents(String str) {
                         "ó","ò","ỏ","õ","ọ","ô","ố","ồ","ổ","ỗ","ộ","ơ","ớ","ờ","ở","ỡ","ợ",
                         "ú","ù","ủ","ũ","ụ","ư","ứ","ừ","ử","ữ","ự",
                         "ý","ỳ","ỷ","ỹ","ỵ",
+                        // Chữ hoa tương ứng
     "Á","À","Ả","Ã","Ạ","Ă","Ắ","Ằ","Ẳ","Ẵ","Ặ","Â","Ấ","Ầ","Ẩ","Ẫ","Ậ",
     "Đ",
     "É","È","Ẻ","Ẽ","Ẹ","Ê","Ế","Ề","Ể","Ễ","Ệ",
@@ -57,6 +41,7 @@ String removeVietnameseAccents(String str) {
                         "o","o","o","o","o","o","o","o","o","o","o","o","o","o","o","o","o",
                         "u","u","u","u","u","u","u","u","u","u","u",
                         "y","y","y","y","y",
+                        // Chữ hoa thay thành chữ hoa không dấu
     "A","A","A","A","A","A","A","A","A","A","A","A","A","A","A","A","A",
     "D",
     "E","E","E","E","E","E","E","E","E","E","E",
@@ -67,16 +52,24 @@ String removeVietnameseAccents(String str) {
                         };
   for (int i = 0; i < sizeof(find) / sizeof(find[0]); i++) {
     str.replace(find[i], repl[i]);
+
+    String findUpper = String(find[i]);
+    findUpper.toUpperCase();
+
+    String replUpper = String(repl[i]);
+    replUpper.toUpperCase();
+
+    str.replace(findUpper, replUpper);
   }
   return str;
 }
-
-// ====== Hàm format tiền ======
 String formatMoney(long money) {
   String s = String(money);
   String res = "";
+
   int len = s.length();
   int count = 0;
+
   for (int i = len - 1; i >= 0; i--) {
     res = s.charAt(i) + res;
     count++;
@@ -88,7 +81,7 @@ String formatMoney(long money) {
   return res;
 }
 
-// ====== Hàm gửi SMS ======
+
 bool sendSMS(String phoneNumber, String message) {
   sim800.println("AT+CMGF=1"); // Chế độ text
   delay(500);
@@ -99,45 +92,53 @@ bool sendSMS(String phoneNumber, String message) {
   sim800.print(message);
   delay(500);
   sim800.write(26); // Ctrl+Z
-  delay(5000);
 
   String response = "";
   unsigned long start = millis();
-  while (millis() - start < 10000) { // Chờ tối đa 10 giây
+
+  // Chờ phản hồi tối đa 10 giây
+  while (millis() - start < 5000) {
     while (sim800.available()) {
       char c = sim800.read();
       response += c;
     }
+    // Nếu đã thấy "+CMGS:" thì kết thúc sớm
     if (response.indexOf("+CMGS:") != -1) {
-      Serial.println("[Phan hoi Module 4G] " + response);
+      Serial.println("📥 [Phản hồi Module 4G] " + response);
       return true; // Gửi thành công
     }
+    // Nếu thấy "ERROR" thì kết thúc sớm
     if (response.indexOf("ERROR") != -1) {
-      Serial.println("[Module 4G] " + response);
+      Serial.println("📥 [Phản hồi Module 4G] " + response);
       return false; // Lỗi gửi
     }
   }
-  Serial.println("[Module 4G] " + response);
-  return false; // Hết thời gian chờ
+
+  Serial.println("📥 [Phản hồi Module 4G] " + response);
+  return false; // Hết thời gian chờ mà không có +CMGS:
 }
 
 
-// ====== Hàm update trạng thái SMS ======
-void updateSMSStatus(String id, String status) {
+
+// Sửa hàm updateSMSStatus() trả về bool
+bool updateSMSStatus(String id, String status) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(apiPostUrl);
     http.addHeader("Content-Type", "application/json");
     String jsonPayload = "{\"id\":\"" + id + "\",\"status\":\"" + status + "\"}";
     int httpCode = http.POST(jsonPayload);
-    Serial.println("📌 [Update SMS] Ma HTTP: " + String(httpCode));
+    Serial.println("📌 [Cập nhật SMS] Mã HTTP: " + String(httpCode));
     String payload = http.getString();
-    Serial.println("📌 [Update SMS] Phan hoi: " + payload);
+    Serial.println("📌 [Cập nhật SMS] Phản hồi: " + payload);
     http.end();
+
+    return (httpCode == 200);
   }
+  return false;
 }
 
-// ====== Hàm kiểm tra & gửi SMS ======
+
 void checkAndSendSMS() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
@@ -175,9 +176,8 @@ void checkAndSendSMS() {
           String smsContent;
 
           String smsStatus = obj["sms"].as<String>();
-          String thanhToanStatus = thanhtoan;
 
-          if (smsStatus == "Send" && thanhToanStatus == "TT") {
+          if (smsStatus == "Send" && thanhtoan == "TT") {
             smsContent = "TB: " + name + "\n" +
                          "Ban da " + loi + "\n";
             if (totalDebtValue == 0) {
@@ -187,19 +187,32 @@ void checkAndSendSMS() {
               smsContent += "TONG NO: " + formatMoney(totalDebtValue) + " VND\n";
             }
             smsContent += "https://hoanglsls.web.app";
-          } else if (thanhToanStatus == "Ok" && smsStatus == "Yes") {
+          } 
+          else if (thanhtoan == "Ok" && smsStatus == "Yes") {
             if (totalDebtValue == 0) {
               smsContent =
-                "ID:" + id + " " + name + "\n" +
-                "Thanh toan thanh cong\n" +
-                "May: " + iphone + "\n" +
-                "Imei: " + imei + "\n" +
-                "Loi: " + loi + "\n" +
-                "So tien: " + tienText + "\n" +
-                "Thanh toan: " + thanhtoan + "\n" +
-                "Time: " + thoigian + "\n";
+                  "ID:" + id + " " + name + "\n" +
+                  "Thanh toan thanh cong\n" +
+                  "May: " + iphone + "\n" +
+                  "Imei: " + imei + "\n" +
+                  "Loi: " + loi + "\n" +
+                  "So tien: " + tienText + "\n" +
+                  "Thanh toan: " + thanhtoan + "\n" +
+                  "Time: " + thoigian + "\n";
             } else {
               smsContent =
+                  "ID:" + id + " " + name + "\n" +
+                  "May: " + iphone + "\n" +
+                  "Imei: " + imei + "\n" +
+                  "Loi: " + loi + "\n" +
+                  "So tien: " + tienText + "\n" +
+                  "Thanh toan: " + thanhtoan + "\n" +
+                  "Time: " + thoigian + "\n" +
+                  "Tong no (" + String(soLuongNo) + " may): " + formatMoney(totalDebtValue) + " VND\n";
+            }
+          } 
+          else {
+            smsContent =
                 "ID:" + id + " " + name + "\n" +
                 "May: " + iphone + "\n" +
                 "Imei: " + imei + "\n" +
@@ -207,60 +220,59 @@ void checkAndSendSMS() {
                 "So tien: " + tienText + "\n" +
                 "Thanh toan: " + thanhtoan + "\n" +
                 "Time: " + thoigian + "\n" +
-                "Tong no (" + String(soLuongNo) + " may): " + formatMoney(totalDebtValue) + " VND\n";
-            }
-          } else {
-            smsContent =
-              "ID:" + id + " " + name + "\n" +
-              "May: " + iphone + "\n" +
-              "Imei: " + imei + "\n" +
-              "Loi: " + loi + "\n" +
-              "So tien: " + tienText + "\n" +
-              "Thanh toan: " + thanhtoan + "\n" +
-              "Time: " + thoigian + "\n" +
-              "Tong no (" + String(soLuongNo) + " may): " + formatMoney(totalDebtValue) + " VND";
+                "Tong no (" + String(soLuongNo) + " may): " + formatMoney(totalDebtValue) + " VND";
           }
 
           smsContent = removeVietnameseAccents(smsContent);
-          Serial.println("📌 [View SMS]\n" + smsContent);
+          Serial.println("📌 [Xem trước SMS]\n" + smsContent);
 
-          if (!hasSentBefore(id)) {
-            bool success = sendSMS(phone, smsContent);
-            if (success) {
-              markAsSent(id);
-              Serial.println("✅ Da gui SMS toi: " + phone);
-              updateSMSStatus(id, "Done");
-            } else {
-              Serial.println("❌ Gui SMS that bai tai: " + phone);
-              updateSMSStatus(id, "Error");
+          bool success = sendSMS(phone, smsContent);
+          String newStatus = success ? "Done" : "Error";
+          Serial.println(success ? "✅ Đã gửi SMS tới: " + phone
+                                 : "❌ Gửi SMS thất bại tới: " + phone);
+
+          // Retry tối đa 3 lần nếu POST không thành công
+          bool updated = false;
+          for (int attempt = 1; attempt <= 3; attempt++) {
+            if (updateSMSStatus(id, newStatus)) {
+              Serial.println("✅ Cập nhật trạng thái '" + newStatus + "' thành công (lần " + String(attempt) + ")");
+              updated = true;
+              break;
             }
-          } else {
-            Serial.println("⏩ ID " + id + " Da gui SMS truoc do roi. Thu update backend lai...");
-            updateSMSStatus(id, "Done");
+            if (attempt < 3) {
+              Serial.println("⚠ Lần " + String(attempt) + " thất bại, thử lại sau 10 giây...");
+              delay(10000);
+            }
+          }
+          if (!updated) {
+            Serial.println("❌ Không thể cập nhật trạng thái '" + newStatus + "' sau 3 lần thử");
           }
 
-          delay(5000);
+          delay(5000); // tránh spam SMS quá nhanh
         }
       }
-    } else {
-      Serial.println("❌ [Lỗi] API GET that bai, Code: " + String(httpCode));
+    } 
+    else {
+      Serial.println("❌ [Lỗi] API GET thất bại, mã: " + String(httpCode));
     }
-    http.end();
+
+    http.end(); // luôn đóng kết nối HTTP
   }
 }
+
 
 void setup() {
   Serial.begin(115200);
   WiFi.begin(ssid, password);
-  Serial.print("📥 Dang ket noi WiFi");
+  Serial.print("📥 Đang kết nối WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println(" ✅ Da ket noi Wifi!");
+  Serial.println(" ✅ Đã kết nối Wifi!");
 
   sim800.begin(SIM800_BAUD, SERIAL_8N1, SIM800_RX, SIM800_TX);
-  Serial.println("📌 Module 4G da khoi tao");
+  Serial.println("📌 Module 4G đã khởi tạo");
 }
 
 void loop() {
