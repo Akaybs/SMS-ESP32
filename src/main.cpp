@@ -6,8 +6,8 @@
 const char *ssid = "HOANG WIFI";
 const char *password = "hhhhhhh1";
 
-String apiGetUrl = "https://sms-api-ncid.onrender.com/roitai";
-String apiPostUrl = "https://sms-api-ncid.onrender.com/update-sms";
+String apiGetUrl = "https://render.com/roitai";
+String apiPostUrl = "https://render.com/update-sms";
 
 HardwareSerial sim800(1);
 #define SIM800_TX 17
